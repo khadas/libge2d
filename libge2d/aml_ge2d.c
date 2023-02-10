@@ -21,6 +21,7 @@
 #include <IONmem.h>
 #include "include/aml_ge2d.h"
 #include "kernel-headers/linux/ge2d.h"
+#include "kernel-headers/linux/dma-heap.h"
 
 static void ge2d_calculate_buffer_size(const buffer_info_t* buffer,
                                        unsigned int* size_out)
@@ -158,7 +159,7 @@ int aml_ge2d_get_cap(int fd_ge2d)
 
 int aml_ge2d_init(aml_ge2d_t *pge2d)
 {
-    int ret = -1, fd_ge2d, ion_fd, i;
+    int fd_ge2d = -1, ion_fd = -1, i;
 
     for (i = 0; i < GE2D_MAX_PLANE; i++) {
         pge2d->ge2dinfo.src_info[0].shared_fd[i] = -1;
@@ -168,13 +169,19 @@ int aml_ge2d_init(aml_ge2d_t *pge2d)
     fd_ge2d = ge2d_open();
     if (fd_ge2d < 0)
         return ge2d_fail;
-    ion_fd = ion_mem_init();
+
+    ion_fd = dmabuf_heap_open(GENERIC_HEAP);
     if (ion_fd < 0) {
-        close(fd_ge2d);
-        return ge2d_fail;
+        ion_fd = ion_mem_init();
+        if (ion_fd < 0) {
+            E_GE2D("%s, %d, ion and dma_heap open failed!\n", __func__, __LINE__);
+        }
+    } else {
+        ion_fd = ion_fd | DMABUF_HEAP_FLAG;
     }
-    pge2d->ge2dinfo.ge2d_fd = fd_ge2d;
+
     pge2d->ge2dinfo.ion_fd = ion_fd;
+    pge2d->ge2dinfo.ge2d_fd = fd_ge2d;
     pge2d->ge2dinfo.cap_attr = aml_ge2d_get_cap(fd_ge2d);
 
     return ge2d_success;
@@ -184,7 +191,9 @@ void aml_ge2d_exit(aml_ge2d_t *pge2d)
 {
     if (pge2d->ge2dinfo.ge2d_fd >= 0)
         ge2d_close(pge2d->ge2dinfo.ge2d_fd);
-    if (pge2d->ge2dinfo.ion_fd >= 0)
+    if (pge2d->ge2dinfo.ion_fd & DMABUF_HEAP_FLAG)
+        dmabuf_heap_close(pge2d->ge2dinfo.ion_fd ^ DMABUF_HEAP_FLAG);
+    else if (pge2d->ge2dinfo.ion_fd >= 0)
         ion_mem_exit(pge2d->ge2dinfo.ion_fd);
 }
 
@@ -309,14 +318,22 @@ int aml_ge2d_mem_alloc(aml_ge2d_t *pge2d)
     for (i = 0; i < pge2d->ge2dinfo.src_info[0].plane_number; i++) {
         if (pge2d->src_size[i]) {
             if (pge2d->ge2dinfo.src_info[0].mem_alloc_type == AML_GE2D_MEM_ION) {
-                pge2d->cmemParm_src[i] = malloc(sizeof(IONMEM_AllocParams));
-            ret = ion_mem_alloc(pge2d->ge2dinfo.ion_fd, pge2d->src_size[i], pge2d->cmemParm_src[i], false);
-                if (ret < 0) {
-                    E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
-                    goto exit;
+                if (pge2d->ge2dinfo.ion_fd & DMABUF_HEAP_FLAG) {
+                    ret = dmabuf_heap_alloc(pge2d->ge2dinfo.ion_fd ^ DMABUF_HEAP_FLAG, pge2d->src_size[i], 0, &dma_fd);
+                    if (ret < 0) {
+                        E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
+                        goto exit;
+                    }
+                }else if (pge2d->ge2dinfo.ion_fd >= 0) {
+                    pge2d->cmemParm_src[i] = malloc(sizeof(IONMEM_AllocParams));
+                    ret = ion_mem_alloc(pge2d->ge2dinfo.ion_fd, pge2d->src_size[i], pge2d->cmemParm_src[i], false);
+                    if (ret < 0) {
+                        E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
+                        goto exit;
                 }
                 dma_fd = ((IONMEM_AllocParams*)pge2d->cmemParm_src[i])->mImageFd;
-            } else if (pge2d->ge2dinfo.src_info[i].mem_alloc_type == AML_GE2D_MEM_DMABUF) {
+                }
+            } else if (pge2d->ge2dinfo.src_info[0].mem_alloc_type == AML_GE2D_MEM_DMABUF) {
                 dma_fd = dmabuf_alloc(pge2d->ge2dinfo.ge2d_fd, GE2D_BUF_INPUT1,	pge2d->src_size[i]);
                 if (dma_fd < 0) {
                     E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
@@ -337,14 +354,22 @@ int aml_ge2d_mem_alloc(aml_ge2d_t *pge2d)
     for (i = 0; i < pge2d->ge2dinfo.src_info[1].plane_number; i++) {
         if (pge2d->src2_size[i]) {
             if (pge2d->ge2dinfo.src_info[1].mem_alloc_type == AML_GE2D_MEM_ION) {
-                pge2d->cmemParm_src2[i] = malloc(sizeof(IONMEM_AllocParams));
-            ret = ion_mem_alloc(pge2d->ge2dinfo.ion_fd, pge2d->src2_size[i], pge2d->cmemParm_src2[i], false);
-                if (ret < 0) {
-                    E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
-                    goto exit;
+                if (pge2d->ge2dinfo.ion_fd & DMABUF_HEAP_FLAG) {
+                    ret = dmabuf_heap_alloc(pge2d->ge2dinfo.ion_fd ^ DMABUF_HEAP_FLAG, pge2d->src2_size[i], 0, &dma_fd);
+                    if (ret < 0) {
+                        E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
+                        goto exit;
+                    }
+                 } else if (pge2d->ge2dinfo.ion_fd >= 0) {
+                    pge2d->cmemParm_src2[i] = malloc(sizeof(IONMEM_AllocParams));
+                    ret = ion_mem_alloc(pge2d->ge2dinfo.ion_fd, pge2d->src2_size[i], pge2d->cmemParm_src2[i], false);
+                    if (ret < 0) {
+                        E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
+                        goto exit;
+                    }
+                    dma_fd = ((IONMEM_AllocParams*)pge2d->cmemParm_src2[i])->mImageFd;
                 }
-                dma_fd = ((IONMEM_AllocParams*)pge2d->cmemParm_src2[i])->mImageFd;
-            } else if (pge2d->ge2dinfo.src_info[i].mem_alloc_type == AML_GE2D_MEM_DMABUF) {
+            } else if (pge2d->ge2dinfo.src_info[1].mem_alloc_type == AML_GE2D_MEM_DMABUF) {
                 dma_fd = dmabuf_alloc(pge2d->ge2dinfo.ge2d_fd, GE2D_BUF_INPUT2, pge2d->src2_size[i]);
                 if (dma_fd < 0) {
                     E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
@@ -364,13 +389,21 @@ int aml_ge2d_mem_alloc(aml_ge2d_t *pge2d)
     for (i = 0; i < pge2d->ge2dinfo.dst_info.plane_number; i++) {
         if (pge2d->dst_size[i]) {
             if (pge2d->ge2dinfo.dst_info.mem_alloc_type == AML_GE2D_MEM_ION) {
-                pge2d->cmemParm_dst[i] = malloc(sizeof(IONMEM_AllocParams));
-                ret = ion_mem_alloc(pge2d->ge2dinfo.ion_fd, pge2d->dst_size[i], pge2d->cmemParm_dst[i], true);
-                if (ret < 0) {
-                    E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
-                    goto exit;
+                if (pge2d->ge2dinfo.ion_fd & DMABUF_HEAP_FLAG) {
+                    ret = dmabuf_heap_alloc(pge2d->ge2dinfo.ion_fd ^ DMABUF_HEAP_FLAG, pge2d->dst_size[i], 0, &dma_fd);
+                    if (ret < 0) {
+                        E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
+                        goto exit;
+                    }
+                } else if (pge2d->ge2dinfo.ion_fd >= 0) {
+                    pge2d->cmemParm_dst[i] = malloc(sizeof(IONMEM_AllocParams));
+                    ret = ion_mem_alloc(pge2d->ge2dinfo.ion_fd, pge2d->dst_size[i], pge2d->cmemParm_dst[i], true);
+                    if (ret < 0) {
+                        E_GE2D("%s,%d,Not enough memory\n",__func__, __LINE__);
+                        goto exit;
+                    }
+                    dma_fd = ((IONMEM_AllocParams*)pge2d->cmemParm_dst[i])->mImageFd;
                 }
-                dma_fd = ((IONMEM_AllocParams*)pge2d->cmemParm_dst[i])->mImageFd;
             } else if (pge2d->ge2dinfo.dst_info.mem_alloc_type == AML_GE2D_MEM_DMABUF) {
                 dma_fd = dmabuf_alloc(pge2d->ge2dinfo.ge2d_fd, GE2D_BUF_OUTPUT, pge2d->dst_size[i]);
                 if (dma_fd < 0) {
@@ -490,17 +523,17 @@ int  aml_ge2d_sync_cache(aml_ge2d_info_t *pge2dinfo, int src_id)
     int i, shared_fd = -1;
 
     if (pge2dinfo) {
-        for (i = 0; i < pge2dinfo->src_info[src_id].plane_number; i++) {
-            shared_fd = pge2dinfo->src_info[src_id].shared_fd[i];
-            if (shared_fd != -1)
-                ion_mem_sync_cache(pge2dinfo->ion_fd, shared_fd);
+        if (!(pge2dinfo->ion_fd & DMABUF_HEAP_FLAG)) {
+            for (i = 0; i < pge2dinfo->src_info[src_id].plane_number; i++) {
+                shared_fd = pge2dinfo->src_info[src_id].shared_fd[i];
+                if (shared_fd != -1)
+                    ion_mem_sync_cache(pge2dinfo->ion_fd, shared_fd);
+            }
         }
-
     } else {
         E_GE2D("aml_ge2d_sync err!\n");
         return -1;
     }
-
     return 0;
 }
 
@@ -509,16 +542,17 @@ int  aml_ge2d_invalid_cache(aml_ge2d_info_t *pge2dinfo)
     int i, shared_fd = -1;
 
     if (pge2dinfo) {
-        for (i = 0; i < pge2dinfo->dst_info.plane_number; i++) {
-            shared_fd = pge2dinfo->dst_info.shared_fd[i];
-            if (shared_fd != -1)
-                ion_mem_invalid_cache(pge2dinfo->ion_fd, shared_fd);
+        if (!(pge2dinfo->ion_fd & DMABUF_HEAP_FLAG)) {
+            for (i = 0; i < pge2dinfo->dst_info.plane_number; i++) {
+                shared_fd = pge2dinfo->dst_info.shared_fd[i];
+                if (shared_fd != -1)
+                    ion_mem_invalid_cache(pge2dinfo->ion_fd, shared_fd);
+            }
         }
     } else {
         E_GE2D("aml_ge2d_invalid err!\n");
         return -1;
     }
-
     return 0;
 }
 
