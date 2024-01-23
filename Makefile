@@ -2,6 +2,7 @@
 # export CROSS_COMPILE=/opt/gcc-linaro-6.3.1-2017.02-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu-
 # CC = $(CROSS_COMPILE)gcc
 
+OUT_DIR ?= .
 CFLAGS += -I./libge2d/include/
 CFLAGS += -I./libge2d/kernel-headers/linux/
 LIBDIR:= ./libge2d
@@ -12,9 +13,9 @@ CHIP_CHECK := ge2d_chip_check
 
 all:
 	$(MAKE) -C $(LIBDIR)
-	$(CC) $(CFLAGS) -L$(LIBDIR) -lpthread -lge2d $(addsuffix .c,$(FEATURE_TEST)) -o $(FEATURE_TEST)
-	$(CC) $(CFLAGS) -L$(LIBDIR) -lpthread -lge2d $(addsuffix .c,$(CHIP_CHECK)) -o $(CHIP_CHECK)
+	$(CC) $(CFLAGS) -L$(LIBDIR) -L$(OUT_DIR) -lpthread -lge2d $(addsuffix .c,$(FEATURE_TEST)) -o $(OUT_DIR)/$(FEATURE_TEST)
+	$(CC) $(CFLAGS) -L$(LIBDIR) -L$(OUT_DIR) -lpthread -lge2d $(addsuffix .c,$(CHIP_CHECK)) -o $(OUT_DIR)/$(CHIP_CHECK)
 
 clean:
 	rm -f $(LIBDIR)/libge2d.so
-	rm -f $(FEATURE_TEST) $(CHIP_CHECK)
+	rm -f $(OUT_DIR)/$(FEATURE_TEST) $(OUT_DIR)/$(CHIP_CHECK)
